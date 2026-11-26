@@ -17,6 +17,7 @@ Run:                               python mak_rs_scanner.py
 import os
 import sys
 import time
+import base64
 import datetime as dt
 
 import numpy as np
@@ -35,8 +36,11 @@ STOCKS_PER_SECTOR = 3        # leaders listed per sector
 HISTORY = "2y"               # price history to download
 CHUNK = 50                   # tickers per download request
 UNIVERSE_FILE = "universe.txt"
+LOGO_FILE = "logo.png"       # your MAK Capital logo; if the file is missing the page shows a text logo instead
 # Set by the automatic GitHub run (MAK_OUT_DIR=docs). Empty = save in the current folder, as on your PC.
 OUT_DIR = os.environ.get("MAK_OUT_DIR", "")
+SECTOR_SOURCE = "stocks"      # "stocks" = sector strength from the equal-weight average of YOUR tagged stocks (matches the leaders);
+                             # "index"  = NSE sector index first, your stocks only if the index is unavailable
 MIN_COVERAGE = 0.5           # automatic run refuses to publish if fewer than this share of stocks downloaded
 
 # Sector name -> Yahoo symbol of its NSE index. If a symbol is not available, the scanner
@@ -66,7 +70,7 @@ INDEX_MAP = {
 # Overlapping sectors count as one family, so you never get HDFC and ICICI as two "leaders".
 FAMILY = {
     "BANK": "BANKS", "PVT BANK": "BANKS", "PSU BANK": "BANKS",
-    "METAL": "METALS", "COMMOD": "METALS",
+    "METAL": "METALS", "COMMOD": "METALS", "POWER": "ENERGY",
     "MIDCAP": "BROAD", "SMALLCAP": "BROAD",
 }
 
@@ -88,6 +92,8 @@ def read_universe(path):
                 continue
             parts = [p.strip() for p in line.replace("\t", ",").split(",")]
             sym = parts[0].upper().replace("NSE:", "").replace(".NS", "")
+            if sym == "SYMBOL":  # a header row from a CSV export
+                continue
             sec = parts[1].upper() if len(parts) > 1 and parts[1] else "UNTAGGED"
             if sym and sym not in seen:
                 seen.add(sym)
@@ -212,6 +218,7 @@ def pick_leaders(sectors, stocks, emerging_only):
 HTML_CSS = """
 *{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Roboto,Arial,sans-serif;background:#f3f6f8;color:#1b2b34}
 .band{background:#fff;padding:22px 28px 14px;border-bottom:4px solid #c4742c;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.logo{height:96px;width:auto;display:block}
 .arrow{font-size:54px;color:#c4742c;font-weight:700;line-height:1}
 .mak{font-size:38px;font-weight:800;color:#034a63;line-height:1}.cap{letter-spacing:7px;color:#034a63;font-size:15px}
 .tag{color:#c4742c;font-weight:700;font-size:13px}
@@ -276,15 +283,27 @@ def _html_table(df, tid, search=False):
     return f'{box}<div class="card"><table id="{tid}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
+def logo_html():
+    """Your logo as an <img> built into the page itself (so the page works anywhere, even as a WhatsApp file)."""
+    for folder in (os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
+        f = os.path.join(folder, LOGO_FILE)
+        if os.path.exists(f):
+            with open(f, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode("ascii")
+            return f'<img class="logo" alt="MAK Capital - Growing Wealth Together" src="data:image/png;base64,{b64}">'
+    return ('<div class="arrow">&#8599;</div><div><div class="mak">MAK</div>'
+            '<div class="cap">C A P I T A L</div><div class="tag">Growing Wealth Together</div></div>')
+
+
 def write_html(path, sec_show, strongest, emerging, top_show, all_show, n_universe, last_day, xlsx_href=None):
     ist = dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30)))
     stamp = f"{ist:%d %b %Y, %I:%M %p} IST"
+    brand = logo_html()
     dl = (f'<br><a href="{xlsx_href}" style="color:#034a63">Download Excel</a>' if xlsx_href else "")
     page = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>MAK Capital - RS Scan vs {BENCH_NAME}</title>
 <style>{HTML_CSS}</style></head><body>
-<div class="band"><div class="arrow">&#8599;</div><div><div class="mak">MAK</div>
-<div class="cap">C A P I T A L</div><div class="tag">Growing Wealth Together</div></div>
+<div class="band">{brand}
 <div class="meta"><b>Relative Strength Scan vs {BENCH_NAME}</b><br>Data up to {last_day:%d %b %Y} &middot; {n_universe} stocks scanned<br>Updated {stamp}</div></div>
 <div class="sign">Mandarr A Kashikar | MAK Capital</div>
 <main>
@@ -346,26 +365,39 @@ def main():
         sys.exit(f"Only {len(stocks)} of {len(universe)} stocks downloaded (Yahoo may be blocking). "
                  "Not publishing a half-empty page; the previous page stays online.")
 
-    # ---- sectors: use the index when it downloaded, else the median of the sector's own stocks ----
+    # ---- sectors: equal-weight average of the sector's own stocks (or the NSE index), ranked on the same RS maths ----
     sec_names = set(INDEX_MAP) | set(s for s in stocks["Sector"].unique() if s != "UNTAGGED")
-    secrows, no_index = [], []
-    for name in sorted(sec_names):
+
+    def ew_rs(name):
+        syms = [x + ".NS" for x in stocks.loc[stocks["Sector"] == name, "Symbol"] if x + ".NS" in stk_close.columns]
+        if len(syms) < 3:
+            return None
+        px = stk_close[syms].reindex(bench.index).ffill(limit=3)
+        eq = (1 + px.pct_change(fill_method=None).mean(axis=1, skipna=True).fillna(0)).cumprod()
+        r = rs_values(eq, bench)
+        r["Source"] = f"equal-weight, {len(syms)} stocks"
+        return r
+
+    def idx_rs(name):
         ysym = INDEX_MAP.get(name)
-        r = None
         if ysym and ysym in idx_close.columns and idx_close[ysym].dropna().size > L4 + LOOKBACK + 5:
             r = rs_values(idx_close[ysym].dropna(), bench)
-            r["Source"] = "index"
-        else:
-            grp = stocks[stocks["Sector"] == name]
-            if len(grp) >= 3:
-                r = {k: grp[k].median() for k in
-                     ("P1", "P2", "P3", "P4", "P1_prev", "P2_prev", "P3_prev", "P4_prev")}
-                r["Source"] = f"median of {len(grp)} stocks"
-            if ysym:
-                no_index.append(name)
+            r["Source"] = "NSE index"
+            return r
+        return None
+
+    secrows, no_index = [], []
+    for name in sorted(sec_names):
+        r = None
+        for fn in ((ew_rs, idx_rs) if SECTOR_SOURCE == "stocks" else (idx_rs, ew_rs)):
+            r = fn(name)
+            if r:
+                break
         if r:
             r["Sector"] = name
             secrows.append(r)
+        else:
+            no_index.append(name)
     sectors = add_rank_delta(pd.DataFrame(secrows)).sort_values("P2", ascending=False).reset_index(drop=True)
 
     # ---- leaders ----
@@ -403,7 +435,7 @@ def main():
         print(f"\nNo usable data for {len(skipped)} stocks (renamed, delisted or suspended?): "
               + ", ".join(skipped[:30]) + (" ..." if len(skipped) > 30 else ""))
     if no_index:
-        print("Index not available from Yahoo, measured from its stocks instead: " + ", ".join(no_index))
+        print("No data for these sectors (no index from Yahoo and fewer than 3 stocks): " + ", ".join(no_index))
     if (stocks["Sector"] == "UNTAGGED").any():
         print(f"{(stocks['Sector'] == 'UNTAGGED').sum()} stocks have no sector in universe.txt: "
               "they are ranked but cannot be sector leaders.")
