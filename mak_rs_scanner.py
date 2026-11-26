@@ -7,7 +7,7 @@ against the NIFTY 500 (always). Then it finds:
   2. Emerging sector leaders   - short-term RS strong, long-term RS still low (the next leaders)
 
 RS is measured the same way as the TradingView RS Table: percent-rank of the
-ratio (stock close / Nifty 500 close) over 5 / 21 / 63 / 126 daily bars.
+ratio (stock close / Nifty 500 close) over 5 / 21 / 55 / 123 daily bars.
 
 Setup (once, in Command Prompt):   pip install yfinance pandas numpy openpyxl
 Files in the same folder:          mak_rs_scanner.py  and  universe.txt
@@ -26,10 +26,10 @@ import pandas as pd
 # ------------------------------- SETTINGS -------------------------------
 BENCH = "^CRSLDX"            # Nifty 500 on Yahoo Finance (always the benchmark)
 BENCH_NAME = "Nifty 500"
-L1, L2, L3, L4 = 5, 21, 63, 126      # same RS periods as the Pine table
+L1, L2, L3, L4 = 5, 21, 55, 123      # same RS periods as the Pine table
 LOOKBACK = 5                 # bars back for the rank-change column (about a week)
 EMG_SHORT_MIN = 70.0         # emerging: 21D RS at least this ...
-EMG_LONG_MAX = 65.0          # ... and 126D RS at most this
+EMG_LONG_MAX = 65.0          # ... and 123D RS at most this
 MIN_LEADER_RS = 50.0         # a stock must have at least this 21D RS to be called a leader
 TOP_SECTORS = 5              # how many top sector families to show leaders for
 STOCKS_PER_SECTOR = 3        # leaders listed per sector
@@ -205,10 +205,10 @@ def pick_leaders(sectors, stocks, emerging_only):
             continue
         used.add(fam)
         for _, c in cand.iterrows():
-            rows.append({"Sector": s["Sector"], "Sector 21D": round(s["P2"], 1),
+            rows.append({"Sector": s["Sector"], f"Sector {L2}D": round(s["P2"], 1),
                          "Stock": c["Symbol"], "Stock sector": c["Sector"],
-                         "21D": round(c["P2"], 1), "63D": round(c["P3"], 1),
-                         "126D": round(c["P4"], 1), "Rank chg": fmt_chg(c["RankChg"]),
+                         f"{L2}D": round(c["P2"], 1), f"{L3}D": round(c["P3"], 1),
+                         f"{L4}D": round(c["P4"], 1), "Rank chg": fmt_chg(c["RankChg"]),
                          "Emerging": "*" if c["Emerging"] else ""})
     return pd.DataFrame(rows)
 
@@ -257,7 +257,7 @@ def _cell(col, val):
     if pd.isna(val):
         return '<td data-v="-1">-</td>'
     name = str(col)
-    if name.endswith("D") and name[:-1].isdigit() or name == "Sector 21D":
+    if name.endswith("D") and name[:-1].isdigit() or name == f"Sector {L2}D":
         cls = "s" if val >= 80 else ("w" if val < 39 else "")
         return (f'<td class="{cls}" data-v="{val}" style="background:linear-gradient(90deg,'
                 f'rgba(3,74,99,.14) {val:.0f}%,transparent {val:.0f}%)">{val:.1f}</td>')
@@ -308,13 +308,13 @@ def write_html(path, sec_show, strongest, emerging, top_show, all_show, n_univer
 <div class="sign">Mandarr A Kashikar | MAK Capital</div>
 <main>
 <h2>Sectors ranked by {L2}D RS</h2>
-<p class="note">Green = strong (80 or more), red = weak (below 39). &#9733; = emerging (21D at least {EMG_SHORT_MIN:.0f}, 126D at most {EMG_LONG_MAX:.0f}). Rank chg = places moved in the last {LOOKBACK} bars. Click any heading to sort.</p>
+<p class="note">Green = strong (80 or more), red = weak (below 39). &#9733; = emerging ({L2}D at least {EMG_SHORT_MIN:.0f}, {L4}D at most {EMG_LONG_MAX:.0f}). Rank chg = places moved in the last {LOOKBACK} bars. Click any heading to sort.</p>
 {_html_table(sec_show, "t_sec")}
 <h2>Emerging sector leaders &#9733;</h2>
 <p class="note">Short-term strength is already visible but the long-term RS is still low: the leaders in the making.</p>
 {_html_table(emerging, "t_emg")}
 <h2>Strongest sector leaders</h2>
-<p class="note">Best stocks of the top {TOP_SECTORS} sector families today (overlapping sectors counted once; minimum 21D RS {MIN_LEADER_RS:.0f}).</p>
+<p class="note">Best stocks of the top {TOP_SECTORS} sector families today (overlapping sectors counted once; minimum {L2}D RS {MIN_LEADER_RS:.0f}).</p>
 {_html_table(strongest, "t_str")}
 <h2>Top 25 stocks across the whole universe</h2>
 {_html_table(top_show, "t_top")}
