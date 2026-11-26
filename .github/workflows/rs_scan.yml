@@ -1,1 +1,20 @@
-
+{
+"name": "MAK RS Scan",
+"on": {
+"schedule": [{"cron": "45 11 * * 1-5"}],
+"workflow_dispatch": {}
+},
+"permissions": {"contents": "write"},
+"jobs": {
+"scan": {
+"runs-on": "ubuntu-latest",
+"steps": [
+{"uses": "actions/checkout@v4"},
+{"uses": "actions/setup-python@v5", "with": {"python-version": "3.12", "cache": "pip"}},
+{"name": "Install packages", "run": "pip install -r requirements.txt"},
+{"name": "Run the RS scan", "env": {"MAK_OUT_DIR": "docs"}, "run": "python mak_rs_scanner.py"},
+{"name": "Publish the new page", "run": "git config user.name \"MAK RS Bot\"\ngit config user.email \"mak-rs-bot@users.noreply.github.com\"\ngit add docs\ngit diff --cached --quiet || git commit -m \"RS scan $(date -u +%F)\"\ngit push"}
+]
+}
+}
+}
